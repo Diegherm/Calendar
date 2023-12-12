@@ -8,6 +8,7 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="selectedDayBackground">#4CAF50</color>
-    <color name="todayBackground">#FFC107</color>
+    <color name="todayBackground">#FFFFFFFF</color>
+    <color name="checkedDayBackground">#4CAF50</color>
     <color name="otherMonthDayBackground">#E0E0E0</color>
 </resources>

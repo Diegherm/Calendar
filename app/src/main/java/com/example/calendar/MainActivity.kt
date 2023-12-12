@@ -1,6 +1,8 @@
 package com.example.calendar
 
+import android.content.ContentValues.TAG
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -22,12 +24,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
+import com.google.firebase.firestore.firestore
 import java.text.SimpleDateFormat
 import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FirebaseApp.initializeApp(this)
         setContent {
             CalendarApp()
         }
@@ -40,6 +46,41 @@ fun CalendarApp() {
     var selectedYear by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
     var selectedDate by remember { mutableStateOf<Date?>(null) }
     var checkedDays by remember { mutableStateOf(mutableMapOf<Date, Boolean>()) }
+
+    // Obtener los días marcados de la base de datos
+    var markedDays by remember(selectedMonth, selectedYear) {
+        mutableStateOf<Map<Date, Boolean>>(emptyMap())
+    }
+
+    LaunchedEffect(selectedMonth, selectedYear) {
+        val db = Firebase.firestore
+        val year = selectedYear.toString()
+        val month = (selectedMonth + 1).toString() // Ajustar el mes para que coincida con el formato de Firestore
+
+        db.collection(year)
+            .document(month)
+            .collection("days")
+            .get()
+            .addOnSuccessListener { result ->
+                val newMarkedDays = mutableMapOf<Date, Boolean>()
+                for (document in result) {
+                    val day = document.id.toIntOrNull()
+                    val isChecked = document.getBoolean("isChecked") ?: false
+                    if (day != null) {
+                        val calendar = Calendar.getInstance().apply {
+                            set(Calendar.YEAR, selectedYear)
+                            set(Calendar.MONTH, selectedMonth)
+                            set(Calendar.DAY_OF_MONTH, day)
+                        }
+                        newMarkedDays[calendar.time] = isChecked
+                    }
+                }
+                markedDays = newMarkedDays
+            }
+            .addOnFailureListener { exception ->
+                Log.w(TAG, "Error getting documents.", exception)
+            }
+    }
 
     Column(
         modifier = Modifier
@@ -79,26 +120,9 @@ fun CalendarApp() {
             }
         }
 
-        // Weekday headers
-        /*LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp)
-        ) {
-            for (weekday in listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")) {
-                item {
-                    Text(
-                        text = weekday,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(4.dp),
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-        }*/
-
         // Calendar
+        println(checkedDays)
+        println(markedDays)
         CalendarGrid(
             selectedMonth = selectedMonth,
             selectedYear = selectedYear,
@@ -106,9 +130,10 @@ fun CalendarApp() {
             onDateSelected = { date ->
                 selectedDate = date
             },
-            checkedDays = checkedDays,
+            checkedDays = markedDays, // Utiliza los días marcados obtenidos de la base de datos
             onCheckboxClick = { date, isChecked ->
-                checkedDays[date] = isChecked
+                Log.d("Checkbox", "Date: $date, isChecked: $isChecked")
+                markedDays = markedDays.toMutableMap().apply { this[date] = isChecked }
             }
         )
     }
@@ -127,10 +152,27 @@ fun CalendarGrid(
         set(Calendar.MONTH, selectedMonth)
         set(Calendar.YEAR, selectedYear)
         set(Calendar.DAY_OF_MONTH, 1)
+        firstDayOfWeek = Calendar.MONDAY
     }
 
+    val currentDay = ((calendar.get(Calendar.DAY_OF_WEEK) - Calendar.MONDAY + 7) % 7) + 1
     val currentMonth = calendar.get(Calendar.MONTH)
     val daysInMonth = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+    // Calcular los días del mes anterior
+    val previousMonthDays = (currentDay - 1).coerceAtLeast(0)
+    val previousMonth = (selectedMonth - 1 + 12) % 12
+    val previousMonthYear = if (previousMonth == 11) selectedYear - 1 else selectedYear
+    val daysInPreviousMonth = Calendar.getInstance().apply {
+        set(Calendar.MONTH, previousMonth)
+        set(Calendar.YEAR, previousMonthYear)
+        set(Calendar.DAY_OF_MONTH, 1)
+    }.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+    // Calcular los días del mes siguiente
+    val nextMonthDays = (7 - (daysInMonth + previousMonthDays) % 7) % 7
+
+
 
     LazyColumn {
         item {
@@ -141,7 +183,8 @@ fun CalendarGrid(
                     .padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                for (weekday in listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")) {
+                // Ajustar el orden de los días de la semana según la nueva configuración
+                for (weekday in listOf("Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom")) {
                     Text(
                         text = weekday,
                         modifier = Modifier
@@ -153,7 +196,7 @@ fun CalendarGrid(
             }
         }
 
-        items((1..daysInMonth).toList().chunked(7)) { week ->
+        items((1..daysInMonth + previousMonthDays + nextMonthDays).toList().chunked(7)) { week ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -165,13 +208,22 @@ fun CalendarGrid(
                     val isChecked = checkedDays[date] ?: false
 
                     DayItem(
-                        day = day,
+                        day = if (day <= previousMonthDays) {
+                            daysInPreviousMonth - previousMonthDays + day
+                        } else if (day > daysInMonth + previousMonthDays) {
+                            day - (daysInMonth + previousMonthDays)
+                        } else {
+                            day - previousMonthDays
+                        },
                         isCurrentMonth = isCurrentMonth,
                         isToday = isToday,
                         isSelected = selectedDate?.equals(date) == true,
-                        isChecked = isChecked,
+                        markedDays = checkedDays, // Cambia markedDays a checkedDays
                         onDateClick = { onDateSelected(date) },
-                        onCheckboxClick = { onCheckboxClick(date, !isChecked) }
+                        onCheckboxClick = { isChecked ->
+                            onCheckboxClick(date, isChecked)
+                            // Aquí puedes realizar acciones adicionales si es necesario
+                        }
                     )
 
                     calendar.add(Calendar.DAY_OF_MONTH, 1)
@@ -187,9 +239,9 @@ fun DayItem(
     isCurrentMonth: Boolean,
     isToday: Boolean,
     isSelected: Boolean,
-    isChecked: Boolean,
+    markedDays: Map<Date, Boolean>,
     onDateClick: () -> Unit,
-    onCheckboxClick: () -> Unit
+    onCheckboxClick: (Boolean) -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -199,11 +251,14 @@ fun DayItem(
                     isSelected -> colorResource(id = R.color.selectedDayBackground)
                     isToday -> colorResource(id = R.color.todayBackground)
                     isCurrentMonth -> Color.Transparent
+                    markedDays[getCurrentDate(day)] == true -> colorResource(id = R.color.checkedDayBackground)
                     else -> colorResource(id = R.color.otherMonthDayBackground)
                 }
             )
             .clickable { onDateClick() }
     ) {
+        var localCheckedState by remember { mutableStateOf(markedDays[getCurrentDate(day)] == true) }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -215,8 +270,12 @@ fun DayItem(
                 Text(text = day.toString(), fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(4.dp))
                 Checkbox(
-                    checked = isChecked,
-                    onCheckedChange = { onCheckboxClick() },
+                    checked = localCheckedState,
+                    onCheckedChange = { newCheckedState ->
+                        localCheckedState = newCheckedState
+                        onCheckboxClick(newCheckedState)
+                        // El resto de tu lógica para guardar en Firestore permanece igual
+                    },
                     modifier = Modifier.padding(4.dp)
                 )
             }
@@ -224,9 +283,14 @@ fun DayItem(
     }
 }
 
-
 @Preview
 @Composable
 fun PreviewCalendarApp() {
     CalendarApp()
+}
+private fun getCurrentDate(day: Int): Date {
+    val calendar = Calendar.getInstance().apply {
+        set(Calendar.DAY_OF_MONTH, day)
+    }
+    return calendar.time
 }
