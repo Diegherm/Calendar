@@ -1,66 +1,467 @@
 package com.example.calendar
 
-import android.content.ContentValues.TAG
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.East
 import androidx.compose.material.icons.filled.West
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.firestore
 import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
-import java.util.*
-import kotlin.math.absoluteValue
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 var ActualYear = Calendar.getInstance().get(Calendar.YEAR)
 var ActualMonth = Calendar.getInstance().get(Calendar.MONTH)
+var calendarN = ""
+
 
 class MainActivity : ComponentActivity() {
+    private val mainViewModel by viewModels<MainViewModel>()
     override fun onCreate(savedInstanceState: Bundle?) {
+
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
-        setContent {
-            CalendarApp()
+        lifecycleScope.launchWhenStarted {
+            try {
+                mainViewModel.initializeCalendarsFromFirestore()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                setContent {
+                    AppContent(mainViewModel)
+                }
+            }
         }
     }
 }
 
 @Composable
-fun CalendarApp() {
+fun AppContent(mainViewModel: MainViewModel) {
+    val navController = rememberNavController()
+
+    val db = Firebase.firestore
+
+    var isDialogVisible by remember { mutableStateOf(false) }
+    var isSelectCalendarDialogVisible by remember { mutableStateOf(false) }
+    var isDeleteCalendarDialogVisible by remember { mutableStateOf(false) }
+
+    NavHost(
+        navController = navController,
+        startDestination = "mainMenu"
+    ) {
+        composable("mainMenu") {
+            if (isDialogVisible) {
+                AlertDialog(
+                    onDismissRequest = {
+                        isDialogVisible = false
+                    },
+                    title = {
+                        Text(text = "Nuevo Calendario")
+                    },
+                    text = {
+                        CreateCalendarDialog(
+                            onConfirm = { name ->
+                                // Guarda el nombre del nuevo calendario en calendarN
+                                calendarN = name
+                                // Puedes realizar otras acciones necesarias antes de cerrar el cuadro de diálogo
+                                isDialogVisible = false
+
+                                // Navegar a la pantalla del nuevo calendario
+                                navController.navigate("calendar/$calendarN")
+                            },
+                            onDismiss = {
+                                isDialogVisible = false
+                            }
+                        )
+                    },
+                    confirmButton = {
+                        // No es necesario tener un botón de confirmación aquí
+                    },
+                    dismissButton = {
+                        // No es necesario tener un botón de cancelación aquí
+                    }
+                )
+            }
+
+            LaunchedEffect(Unit) {
+                mainViewModel.initializeCalendarsFromFirestore()
+            }
+
+            if (isSelectCalendarDialogVisible) {
+                SelectCalendarDialog(
+                    calendars = mainViewModel.calendars,
+                    onCalendarSelected = { selectedCalendar ->
+                        // Guarda el nombre del nuevo calendario en calendarN
+                        calendarN = selectedCalendar.calendarName
+                        isSelectCalendarDialogVisible = false
+
+                        navController.navigate("calendar/$calendarN")
+                    },
+                    onDismiss = {
+                        isSelectCalendarDialogVisible = false
+                    }
+                )
+            }
+
+            if (isDeleteCalendarDialogVisible) {
+                DeleteCalendarDialog(
+                    calendars = mainViewModel.calendars,
+                    onCalendarSelected = { selectedCalendar ->
+                        println("SE ELIMINÓ ${selectedCalendar.calendarName}")
+
+                        db.collection("calendarios")
+                            .document(selectedCalendar.calendarName)
+                            .delete()
+
+                        navController.navigate("mainMenu")
+                        isDeleteCalendarDialogVisible = false
+                    },
+                    onDismiss = {
+                        isDeleteCalendarDialogVisible = false
+                    }
+                )
+            }
+
+            MainMenu(
+                mainViewModel = mainViewModel,
+                onCalendarSelected = {
+                    mainViewModel.selectCalendar(it)
+                    navController.navigate("calendar/${it.calendarName}")
+                    calendarN = it.calendarName
+                },
+                onCreateCalendar = {
+                    isDialogVisible = true
+                },
+                onDeleteCalendar = {
+                    isDeleteCalendarDialogVisible = true
+                },
+                onSelectCalendar = {
+                    isSelectCalendarDialogVisible = true
+                }
+            )
+        }
+        composable("calendar/{calendarId}") { backStackEntry ->
+            CalendarApp(selectedCalendar = calendarN) {
+                println("Se presionó back")
+                navController.navigate("mainMenu")
+            }
+        }
+    }
+}
+
+@Composable
+fun SelectCalendarDialog(
+    calendars: List<CalendarItem>,
+    onCalendarSelected: (CalendarItem) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedCalendar by remember { mutableStateOf<CalendarItem?>(null) }
+
+    AlertDialog(
+        onDismissRequest = {
+            onDismiss()
+        },
+        title = {
+            Text(text = "Seleccionar Calendario")
+        },
+        text = {
+            // Lista de calendarios para seleccionar
+            LazyColumn {
+                items(calendars) { calendar ->
+                    CalendarItemRow(
+                        calendar = calendar,
+                        isSelected = selectedCalendar == calendar,
+                        onCalendarSelected = {
+                            selectedCalendar = calendar
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                selectedCalendar?.let {
+                    onCalendarSelected(it)
+                }
+            }) {
+                Text("Aceptar")
+            }
+        },
+        dismissButton = {
+            Button(onClick = {
+                // Restablece la selección cuando se cierra el diálogo
+                selectedCalendar = null
+                onDismiss()
+            }) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+@Composable
+fun CalendarItemRow(
+    calendar: CalendarItem,
+    isSelected: Boolean,
+    onCalendarSelected: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = calendar.calendarName,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f)
+        )
+        Checkbox(
+            checked = isSelected,
+            onCheckedChange = {
+                onCalendarSelected()
+            }
+        )
+    }
+}
+
+@Composable
+fun DeleteCalendarDialog(
+    calendars: List<CalendarItem>,
+    onCalendarSelected: (CalendarItem) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedCalendar by remember { mutableStateOf<CalendarItem?>(null) }
+
+    AlertDialog(
+        onDismissRequest = {
+            // Puedes manejar lógica adicional al cerrar el diálogo si es necesario
+            onDismiss()
+        },
+        title = {
+            Text(text = "Eliminar Calendario")
+        },
+        text = {
+            // Lista de calendarios para seleccionar
+            LazyColumn {
+                items(calendars) { calendar ->
+                    CalendarItemRow(
+                        calendar = calendar,
+                        isSelected = selectedCalendar == calendar,
+                        onCalendarSelected = {
+                            selectedCalendar = calendar
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                selectedCalendar?.let {
+                    onCalendarSelected(it)
+                }
+            }) {
+                Text("Eliminar")
+            }
+        },
+        dismissButton = {
+            Button(onClick = {
+                // Restablece la selección cuando se cierra el diálogo
+                selectedCalendar = null
+                onDismiss()
+            }) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+@Composable
+fun CreateCalendarDialog(
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newCalendarName by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        TextField(
+            value = newCalendarName,
+            onValueChange = {
+                newCalendarName = it
+            },
+            label = { Text("Nombre del nuevo calendario") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Button(onClick = {
+                onConfirm(newCalendarName)
+            }) {
+                Text("Aceptar")
+            }
+            Button(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    }
+}
+
+@Composable
+fun MainMenu(
+    mainViewModel: MainViewModel,
+    onCalendarSelected: (CalendarItem) -> Unit,
+    onCreateCalendar: () -> Unit,
+    onDeleteCalendar: () -> Unit,
+    onSelectCalendar: () -> Unit
+) {
+    var newCalendarName by remember { mutableStateOf("") }
+    var isDialogVisible by remember { mutableStateOf(false) }
+    var isSelectCalendarDialogVisible by remember { mutableStateOf(false) }
+    var isDeleteCalendarDialogVisible by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Calendarios",
+            fontWeight = FontWeight.Bold,
+            fontSize = 50.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 20.dp),
+            textAlign = TextAlign.Center
+        )
+
+        // Botón para Crear Calendario
+        Button(
+            onClick = {
+                isDialogVisible = true
+                println("isDialogVisible: $isDialogVisible")
+                println("calendarN: $calendarN")
+                onCreateCalendar()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+        ) {
+            Text(text = "Crear Calendario")
+        }
+
+        Button(
+            onClick = { isSelectCalendarDialogVisible = true
+                //println("isDialogVisible: $isSelectCalendarDialogVisible")
+                onSelectCalendar()},
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+        ) {
+            Text(text = "Seleccionar Calendario")
+        }
+
+        // Botón para Eliminar Calendario
+        Button(
+            onClick = { isDeleteCalendarDialogVisible = true
+                        println("isDeleteCalendarDialogVisible: $isDeleteCalendarDialogVisible")
+                        onDeleteCalendar()},
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+        ) {
+            Text(text = "Eliminar Calendario")
+        }
+
+        /*// Lista de Calendarios (puedes usar LazyColumn si hay muchos calendarios)
+        mainViewModel.calendars.forEach { calendar ->
+
+        }*/
+    }
+}
+
+@Composable
+fun CalendarApp(selectedCalendar: String, onNavigateBack: () -> Unit) {
+
     var selectedMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH)) }
     var selectedYear by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
     var selectedDate by remember { mutableStateOf<Date?>(null) }
-    var checkedDays by remember { mutableStateOf(mutableMapOf<Int, Boolean>()) }
 
     // Obtener los días marcados de la base de datos
-    var markedDays by remember { mutableStateOf(emptyMap<Pair<Int, Int>, Boolean>()) }
-    var markedDaysPM by remember { mutableStateOf(emptyMap<Pair<Int, Int>, Boolean>()) }
+    var markedDays by remember { mutableStateOf(emptyMap<String, Boolean>()) }
+    var markedDaysPM by remember { mutableStateOf(emptyMap<String, Boolean>()) }
+    var markedDaysNM by remember { mutableStateOf(emptyMap<String, Boolean>()) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        Text(
+            text = "Calendario de $calendarN",
+            fontWeight = FontWeight.Bold,
+            fontSize = 20.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 20.dp),
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -101,6 +502,7 @@ fun CalendarApp() {
         LaunchedEffect(selectedMonth, selectedYear) {
             markedDays = getMarkedDays(selectedYear, selectedMonth)
             markedDaysPM = getMarkedDaysOfPreviousMonth(selectedYear, selectedMonth)
+            markedDaysNM = getMarkedDaysOfNextMonth(selectedYear, selectedMonth)
         }
 
         // Calendar
@@ -113,11 +515,22 @@ fun CalendarApp() {
             },
             markedDays = markedDays,
             markedDaysPM = markedDaysPM,
+            markedDaysNM = markedDaysNM,
             onCheckboxClick = { day, isChecked ->
                 // Utiliza Pair(day, selectedMonth) como clave para actualizar el mapa
-                markedDays = markedDays.toMutableMap().apply { this[Pair(day, selectedMonth)] = isChecked }
+                markedDays = markedDays.toMutableMap().apply { this[day.toString()] = isChecked }
             }
         )
+
+        Button(
+            onClick = { onNavigateBack() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+                .padding(top = 40.dp)
+        ) {
+            Text("Volver al Menú Principal")
+        }
     }
 }
 
@@ -127,9 +540,10 @@ fun CalendarGrid(
     selectedYear: Int,
     selectedDate: Date?,
     onDateSelected: (Date) -> Unit,
-    markedDays: Map<Pair<Int, Int>, Boolean>,
-    markedDaysPM: Map<Pair<Int, Int>, Boolean>,
-    onCheckboxClick: (Int, Boolean) -> Unit
+    markedDays: Map<String, Boolean>,
+    markedDaysPM: Map<String, Boolean>,
+    markedDaysNM: Map<String, Boolean>,
+    onCheckboxClick: (String, Boolean) -> Unit
 ) {
     val calendar = Calendar.getInstance().apply {
         set(Calendar.MONTH, selectedMonth)
@@ -185,9 +599,11 @@ fun CalendarGrid(
                 for (day in week) {
                     val date = calendar.time
                     val isCurrentMonth = calendar.get(Calendar.MONTH) == currentMonth
-                    val isToday = isCurrentMonth && calendar.get(Calendar.DAY_OF_MONTH) == day
-                    val isChecked = markedDays[Pair(day, selectedMonth)] ?: false
-                    val isCheckedPM = markedDaysPM[Pair(day, selectedMonth)] ?: false
+                    val isChecked = markedDays[day.toString()] ?: false
+                    val isCheckedPM = markedDaysPM[day.toString()] ?: false
+                    val isCheckedNM = markedDaysNM[day.toString()] ?: false
+
+                    //println("$isCurrentMonth && ${calendar.get(Calendar.DAY_OF_MONTH)} == $day")
 
                     DayItem(
                         day = if (day <= previousMonthDays) {
@@ -197,11 +613,24 @@ fun CalendarGrid(
                         } else {
                             day - previousMonthDays
                         },
-                        isCurrentMonth = isCurrentMonth,
-                        isToday = isToday,
+                        month = if (day <= previousMonthDays) {
+                            ActualMonth
+                        } else if (day > daysInMonth + previousMonthDays) {
+                            ActualMonth + 2
+                        } else {
+                            ActualMonth + 1
+                        },
+                        isCurrentMonth = if (day <= previousMonthDays) {
+                            false
+                        } else if (day > daysInMonth + previousMonthDays) {
+                            false
+                        } else {
+                            true
+                        },
                         isSelected = selectedDate?.equals(date) == true,
                         isChecked = markedDays,
                         isCheckedPM = markedDaysPM,
+                        isCheckedNM = markedDaysNM,
                         onDateClick = { onDateSelected(date) },
                         onCheckboxClick = { day, isChecked -> onCheckboxClick(day, isChecked) }
                     )
@@ -216,41 +645,33 @@ fun CalendarGrid(
 @Composable
 fun DayItem(
     day: Int,
+    month: Int,
     isCurrentMonth: Boolean,
-    isToday: Boolean,
     isSelected: Boolean,
-    isChecked: Map<Pair<Int, Int>, Boolean>,
-    isCheckedPM: Map<Pair<Int, Int>, Boolean>,
+    isChecked: Map<String, Boolean>,
+    isCheckedPM: Map<String, Boolean>,
+    isCheckedNM: Map<String, Boolean>,
     onDateClick: () -> Unit,
-    onCheckboxClick: (Int, Boolean) -> Unit
+    onCheckboxClick: (String, Boolean) -> Unit
 ) {
-    //val isCheckedPM = isCheckedPM[Pair(day, ActualMonth-1)] ?: false
-    //val isChecked = isChecked[Pair(day, ActualMonth)] ?: false
-    val isPreviousMonth = day <= 0
-    val actualMonth = if (isPreviousMonth) ActualMonth - 1 else ActualMonth
-    val actualYear = if (isPreviousMonth && ActualMonth == 0) ActualYear - 1 else ActualYear
+    val calendar = Calendar.getInstance()
+    val dateFormat = SimpleDateFormat("dd", Locale.getDefault())
+    val currentDay = dateFormat.format(calendar.time).toInt()
+    val calendar2 = Calendar.getInstance()
+    val dateFormat2 = SimpleDateFormat("MM", Locale.getDefault())
+    val currentMonth = dateFormat2.format(calendar2.time).toInt()
+    val isToday = if(day == currentDay && (ActualMonth+1) == month && ActualMonth+1 == currentMonth) true else false
+    val diacb = day.toString() + "-" + month.toString()
 
-    println("DIA $day ICM $isCurrentMonth")
-
-    /*val isDayChecked = if (actualMonth-1 <= actualMonth) {
-        isCheckedPM[Pair(day.absoluteValue, actualMonth-1)] ?: false
-    } else {
-        isChecked[Pair(day, actualMonth)] ?: false
-    }*/
-
-    /*LaunchedEffect(isChecked, isCheckedPM) {
-        println("Marked Days(3): $isChecked")
-        println("Marked Days(3): $isCheckedPM")
-    }*/
+    //println("DIA $diacb | $isChecked | $isCheckedPM | $isCheckedNM")
 
     Box(
         modifier = Modifier
             .size(48.dp)
             .background(
                 color = when {
-                    isSelected -> colorResource(id = R.color.selectedDayBackground)
                     isToday -> colorResource(id = R.color.todayBackground)
-                    //isCurrentMonth && isChecked -> colorResource(id = R.color.checkedDayBackground)
+                    !isCurrentMonth -> colorResource(id = R.color.checkedDayBackground)
                     else -> colorResource(id = R.color.otherMonthDayBackground)
                 }
             )
@@ -267,23 +688,33 @@ fun DayItem(
                 Text(text = day.toString(), fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(4.dp))
                 Checkbox(
-                    checked = if (isPreviousMonth) isCheckedPM[Pair(day, actualMonth)] ?: false else isChecked[Pair(day, actualMonth)] ?: false,
+                    checked = isChecked[diacb] ?: false || isCheckedPM[diacb] ?: false || isCheckedNM[diacb] ?: false,
                     onCheckedChange = { newCheckedState ->
-                        onCheckboxClick(day, newCheckedState)
+                        onCheckboxClick(diacb, newCheckedState)
                         val db = Firebase.firestore
+                        val dia = day.toString() + "-" + (ActualMonth+1).toString()
 
                         // Guardar datos
                         val year = ActualYear.toString()
                         val month = (ActualMonth + 1).toString()
-                        val dayFormatted = day.toString() // Convierte el día a String
+
+                        val nullMap = mapOf(
+                            "documentId" to calendarN)
+
                         val isCheckedMap = mapOf(
-                            "date" to day,
+                            "date" to dia,
                             "isChecked" to newCheckedState)
 
-                        db.collection(year)
+                        db.collection("calendarios")
+                            .document(calendarN)
+                            .set(nullMap)
+
+                        db.collection("calendarios")
+                            .document(calendarN)
+                            .collection(year)
                             .document(month)
                             .collection("days")
-                            .document(dayFormatted)
+                            .document(dia)
                             .set(isCheckedMap)
                             .addOnSuccessListener {
                                 //Log.d(TAG, "Año $year Mes $month Dia $dayFormatted ACTUALIZADO")
@@ -292,6 +723,7 @@ fun DayItem(
                                 //Log.w(TAG, "Error writing document", e)
                             }
                     },
+                    enabled = if(isCurrentMonth) true else false,
                     modifier = Modifier.padding(4.dp)
                 )
             }
@@ -299,53 +731,113 @@ fun DayItem(
     }
 }
 
-@Preview
-@Composable
-fun PreviewCalendarApp() {
-    CalendarApp()
-}
-
-suspend fun getMarkedDays(year: Int, month: Int): Map<Pair<Int, Int>, Boolean> {
+suspend fun getMarkedDays(year: Int, month: Int): Map<String, Boolean> {
     val db = Firebase.firestore
 
-    val result = db.collection(year.toString())
+    val result = db.collection("calendarios")
+        .document(calendarN)
+        .collection(year.toString())
         .document((month + 1).toString())
         .collection("days")
         .get()
         .await()
 
-    val markedDays = mutableMapOf<Pair<Int, Int>, Boolean>()
+    val markedDays = mutableMapOf<String, Boolean>()
     for (document in result) {
-        val day = document.id.toIntOrNull()
+        val day = document.get("date")
         val isChecked = document.getBoolean("isChecked") ?: false
         if (day != null && isChecked) {
-            markedDays[Pair(day, month)] = isChecked
+            //println("DIA = ${day}")
+            markedDays[day.toString()] = isChecked
         }
     }
-    println(markedDays)
+    //println(markedDays)
 
     return markedDays
 }
 
-suspend fun getMarkedDaysOfPreviousMonth(year: Int, month: Int): Map<Pair<Int, Int>, Boolean> {
+suspend fun getMarkedDaysOfPreviousMonth(year: Int, month: Int): MutableMap<String, Boolean> {
     val db = Firebase.firestore
 
-    val result = db.collection(year.toString())
+    val calendar = Calendar.getInstance().apply {
+        set(Calendar.MONTH, ActualMonth)
+        set(Calendar.YEAR, ActualYear)
+        set(Calendar.DAY_OF_MONTH, 1)
+        firstDayOfWeek = Calendar.MONDAY
+    }
+
+    val currentDay = ((calendar.get(Calendar.DAY_OF_WEEK) - Calendar.MONDAY + 7) % 7) + 1
+    val currentMonth = ActualMonth
+    val currentYear = ActualYear
+
+    val previousMonthDays = (currentDay - 1).coerceAtLeast(0)
+    val previousMonth = (currentMonth - 1 + 12) % 12
+    val previousMonthYear = if (previousMonth == 11) currentYear - 1 else currentYear
+    val daysInPreviousMonth = Calendar.getInstance().apply {
+        set(Calendar.MONTH, previousMonth)
+        set(Calendar.YEAR, previousMonthYear)
+        set(Calendar.DAY_OF_MONTH, 1)
+    }.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+    val minDay = (daysInPreviousMonth - previousMonthDays + 1).toString() + "-" + (currentMonth).toString()
+
+    val result = db.collection("calendarios")
+        .document(calendarN)
+        .collection(year.toString())
         .document(month.toString())
         .collection("days")
-        .whereGreaterThanOrEqualTo("date", 27)
+        .whereGreaterThanOrEqualTo("date", minDay)
         .get()
         .await()
 
-    val markedDays = mutableMapOf<Pair<Int, Int>, Boolean>()
+    val markedDays = mutableMapOf<String, Boolean>()
     for (document in result) {
-        val day = document.id.toIntOrNull()
+        val day = document.get("date")
         val isChecked = document.getBoolean("isChecked") ?: false
         if (day != null && isChecked) {
-            markedDays[Pair(day, month-1)] = isChecked
+            markedDays[day.toString()] = isChecked
         }
     }
-    println(markedDays)
+    //println(markedDays)
+
+    return markedDays
+}
+
+suspend fun getMarkedDaysOfNextMonth(year: Int, month: Int): MutableMap<String, Boolean> {
+    val db = Firebase.firestore
+
+    val calendar = Calendar.getInstance().apply {
+        set(Calendar.MONTH, ActualMonth)
+        set(Calendar.YEAR, ActualYear)
+        set(Calendar.DAY_OF_MONTH, 1)
+        firstDayOfWeek = Calendar.MONDAY
+    }
+
+    val currentDay = ((calendar.get(Calendar.DAY_OF_WEEK) - Calendar.MONDAY + 7) % 7) + 1
+    val previousMonthDays = (currentDay - 1).coerceAtLeast(0)
+    val daysInMonth = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+
+    val nextMonthDays = (7 - (daysInMonth + previousMonthDays) % 7) % 7
+    val maxDay = nextMonthDays.toString() + "-" + (ActualMonth+2).toString()
+
+    val result = db.collection("calendarios")
+        .document(calendarN)
+        .collection(year.toString())
+        .document((month+2).toString())
+        .collection("days")
+        .whereLessThanOrEqualTo("date", maxDay)
+        .get()
+        .await()
+
+    val markedDays = mutableMapOf<String, Boolean>()
+    for (document in result) {
+        val day = document.get("date")
+        val isChecked = document.getBoolean("isChecked") ?: false
+        if (day != null && isChecked) {
+            markedDays[day.toString()] = isChecked
+        }
+    }
+    //println(markedDays)
 
     return markedDays
 }
